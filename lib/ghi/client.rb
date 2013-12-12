@@ -1,6 +1,7 @@
 require 'cgi'
 require 'net/https'
 
+
 unless defined? Net::HTTP::Patch
   # PATCH support for 1.8.7.
   Net::HTTP::Patch = Class.new(Net::HTTP::Post) { METHOD = 'PATCH' }
@@ -27,7 +28,11 @@ module GHI
       end
 
       def body
-        @body ||= JSON.parse @response.body
+        if @response.is_a?(Net::HTTPResponse) 
+          @body ||= JSON.parse @response.body
+        else
+          @body ||= JSON.parse @response
+        end 
       end
 
       def next_page() links['next'] end
@@ -115,6 +120,12 @@ module GHI
       end
       req.basic_auth username, password if username && password
 
+      online = GHI.config('ghi.cache') || false
+      cache_dir = GHI.config('ghi.cache-dir') || "/tmp"
+      file = Digest::MD5.hexdigest(req.path)
+      file_path = File.join(cache_dir, method.to_s.upcase + file)
+      puts "#{cache_dir} :: #{file}"
+      
       proxy   = GHI.config 'https.proxy', :upcase => false
       proxy ||= GHI.config 'http.proxy',  :upcase => false
       if proxy
@@ -128,16 +139,41 @@ module GHI
       http.verify_mode = OpenSSL::SSL::VERIFY_NONE # FIXME 1.8.7
 
       GHI.v? and puts "\r===> #{method.to_s.upcase} #{path} #{req.body}"
-      res = http.start { http.request req }
+      begin
+        res = http.start { http.request req }
+        if File.exists? file_path
+          f = File.open(file_path, "w") { |file| file.write(res.body)}
+        else
+          puts "no file there"
+          f = File.new("#{file_path}", "w")
+          f.write(res.body)
+        end
+      rescue
+        puts "No internet?"
+        if File.exists? file_path
+          File.open(file_path, "r"){|file| res = file.read()}
+        else
+          puts "Sorry no cache for that request"
+        end
+      end
       GHI.v? and puts "\r<=== #{res.code}: #{res.body}"
+      #puts "\r===> #{method.to_s.upcase} #{path} #{req.body}"
+      #puts "\r<=== #{res.code}: #{res.body}"
+      #File.open("/home/alex/workspace/scratch/foo.txt", "w") { |file| file.write(res.body)}
+
 
       case res
       when Net::HTTPSuccess
+        puts res.class
+        puts "#{res.is_a?(Net::HTTPResponse)}"
         return Response.new(res)
       when Net::HTTPUnauthorized
         if password.nil?
           raise Authorization::Required, 'Authorization required'
         end
+      else
+        puts "WHAT?"
+        return Response.new(res)
       end
 
       raise Error, res
